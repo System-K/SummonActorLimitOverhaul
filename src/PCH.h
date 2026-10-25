@@ -115,7 +115,7 @@ using namespace REL::literals;
 
 
 // This file is required.
-#include "include\PerkEntryPointExtenderAPI.h"
+#include "include/PerkEntryPointExtenderAPI.h" // SKSE-Hotfixes: portable include path for the Linux host.
 
 
 
@@ -125,7 +125,7 @@ namespace stl {
 
     template <class T>
     void write_thunk_call(std::uintptr_t a_src) {
-        SKSE::AllocTrampoline(14);
+        // SKSE-Hotfixes: both 14-byte relays are allocated once by the plugin entry point.
 
         auto& trampoline = SKSE::GetTrampoline();
         T::func = trampoline.write_call<5>(a_src, T::thunk);

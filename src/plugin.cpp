@@ -1,11 +1,11 @@
 
 
-#include "include\PerkEntryPointExtenderAPI.h"
+#include "include/PerkEntryPointExtenderAPI.h" // SKSE-Hotfixes: portable include path for the Linux host.
 
 struct Hooks {
     struct CommandedActorLimitHook {
-        static void thunk(RE::PerkEntryPoint entry_point, RE::Actor* target, RE::MagicItem* a_spell, void* out) {
-            float* floatPtr = static_cast<float*>(out);
+        static void thunk(RE::PerkEntryPoint entry_point, RE::Actor* target, RE::MagicItem* a_spell, float* out) { // SKSE-Hotfixes: verified 1.7.104 dispatcher receives a float output pointer.
+            float* floatPtr = out; // SKSE-Hotfixes: typed output, same four-argument ABI.
             *floatPtr = 999.0f;  // If you need more than 999 summons, I think you've got a problem
 
         }
@@ -13,9 +13,9 @@ struct Hooks {
     };
 
     struct CommandedActorHook {
-        static void thunk(RE::AIProcess* test, RE::ActiveEffectReferenceEffectController* target2, void* target3) {
+        static void thunk(RE::AIProcess* test, RE::CommandedActorData* target2, RE::Actor* target3) { // SKSE-Hotfixes: 1.7.104 call passes process, stack-owned commanded data and Actor.
             func(test, target2, target3);
-            auto a_AE = target2->effect;
+            auto a_AE = target2->activeEffect; // SKSE-Hotfixes: real commanded-data effect pointer is +0x08; old controller type only coincidentally shared that offset.
             std::vector<int> indexarray;
             std::vector<int> indexarrayuntyped;
             std::vector<int> indexarrayworking;
@@ -265,20 +265,43 @@ struct Hooks {
         }
         static inline REL::Relocation<decltype(thunk)> func;
     };
-    static void Install() {
-        REL::Relocation<std::uintptr_t> functionCommandedActorLimitHook{RELOCATION_ID(38993, 40056),
-                                                                        REL::Relocate(0xA1, 0xEC)};
-        stl::write_thunk_call<CommandedActorLimitHook>(functionCommandedActorLimitHook.address());
+    // SKSE-Hotfixes: preflight BOTH verified calls before writing EITHER one. Unknown edits or existing call-site detours are rejected.
+    static bool IsVerifiedCall(std::uintptr_t site, const std::array<std::uint8_t, 5>& expected, std::uintptr_t callee) {
+        if (std::memcmp(reinterpret_cast<const void*>(site), expected.data(), expected.size()) != 0) {
+            return false;
+        }
+        std::int32_t displacement = 0;
+        std::memcpy(&displacement, reinterpret_cast<const void*>(site + 1), sizeof(displacement));
+        return site + 5 + static_cast<std::intptr_t>(displacement) == callee;
+    }
 
-        REL::Relocation<std::uintptr_t> functionCommandedActorHook{RELOCATION_ID(38904, 39950),
-                                                                   REL::Relocate(0x14B, 0x12B)};
-        stl::write_thunk_call<CommandedActorHook>(functionCommandedActorHook.address());
+    static void Install() {
+        // SKSE-Hotfixes: the supplied 1.7.104 executable is the only verified target, not every runtime advertised by upstream.
+        if (REL::Module::get().version() != SKSE::RUNTIME_SSE_1_7_104) {
+            SKSE::stl::report_and_fail("Conjuration Limit Fix hotfix supports only verified Skyrim 1.7.104. No hooks installed.");
+        }
+        REL::Relocation<std::uintptr_t> limitSite{REL::ID(40056), 0xEC};
+        REL::Relocation<std::uintptr_t> actorSite{REL::ID(39950), 0x12B};
+        REL::Relocation<std::uintptr_t> dispatcher{REL::ID(23526)};
+        REL::Relocation<std::uintptr_t> commandedFunction{REL::ID(40056)};
+        constexpr std::array<std::uint8_t, 5> limitBytes{0xE8, 0x8F, 0x2B, 0xC6, 0xFF};
+        constexpr std::array<std::uint8_t, 5> actorBytes{0xE8, 0x60, 0x35, 0x00, 0x00};
+        if (!IsVerifiedCall(limitSite.address(), limitBytes, dispatcher.address()) ||
+            !IsVerifiedCall(actorSite.address(), actorBytes, commandedFunction.address())) {
+            SKSE::stl::report_and_fail("Conjuration Limit Fix: hook bytes or original callees differ from verified 1.7.104. Possible incompatible executable or call-site conflict. No hooks installed.");
+        }
+        if (SKSE::GetTrampoline().free_size() < 28) {
+            SKSE::stl::report_and_fail("Conjuration Limit Fix: insufficient trampoline space for both verified hooks. No hooks installed.");
+        }
+        stl::write_thunk_call<CommandedActorLimitHook>(limitSite.address());
+        stl::write_thunk_call<CommandedActorHook>(actorSite.address());
+        SKSE::log::info("Conjuration Limit Fix hotfix: both verified 1.7.104 call sites installed.");
     };
 };
 
 
 SKSEPluginLoad(const SKSE::LoadInterface* skse) {
-    SKSE::Init(skse);
+    SKSE::Init(skse, { .trampoline = true, .trampolineSize = 28 }); // SKSE-Hotfixes: NG 11 initializes once; reserve both 14-byte call relays.
     Hooks::Install();
     return true;
 }
